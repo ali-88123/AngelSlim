@@ -52,7 +52,7 @@ class Qwen3VL(BaseLLMModel):
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         use_cache=False,
-        using_multi_nodes=False,
+        using_dist_run=False,
     ):
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_path,

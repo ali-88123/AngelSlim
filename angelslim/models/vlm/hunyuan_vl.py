@@ -47,7 +47,7 @@ class HunyuanVL(BaseLLMModel):
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         use_cache=False,
-        using_multi_nodes=False,
+        using_dist_run=False,
     ):
         use_flash_attn = False
         use_sdpa_attn = False

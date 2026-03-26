@@ -109,14 +109,40 @@ class QAT:
             )
             set_op_by_name(self.quant_model.model, name, qdq_module)
 
+    def _save_fake_ckpt(self, cpu_state, save_path):
+        """Save fake quantization checkpoint to disk."""
+        parts = save_path.rsplit("/")
+        save_path = os.path.join("/".join(parts[:-1]), parts[-1] + "_fake_quant_model.pt")
+        print_info(f"Start save QAT fake ckpt to: {save_path}")
+        torch.save(cpu_state, save_path)
+
     def save(self, save_path: str):
         if self.save_fmt == "fake":
-            parts = save_path.rsplit("/")
-            save_path = os.path.join("/".join(parts[:-1]), parts[-1] + "_fake_quant_model.pt")
-            print_info(f"Start save QAT fake ckpt to: {save_path}")
+            if self.trainer.external_trainer is not None and getattr(
+                self.trainer.external_trainer, "is_fsdp_enabled", False
+            ):
+                # FSDP: collect full state dict across shards and save on rank 0
+                from torch.distributed.fsdp import (
+                    FullStateDictConfig,
+                    FullyShardedDataParallel,
+                )
+                from torch.distributed.fsdp.fully_sharded_data_parallel import (
+                    StateDictType,
+                )
 
-            cpu_state = self.trainer.external_trainer.model.state_dict()
-            torch.save(cpu_state, save_path)
+                save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+                with FullyShardedDataParallel.state_dict_type(
+                    self.trainer.external_trainer.model,
+                    StateDictType.FULL_STATE_DICT,
+                    save_policy,
+                ):
+                    cpu_state = self.trainer.external_trainer.model.state_dict()
+                if torch.distributed.get_rank() == 0:
+                    self._save_fake_ckpt(cpu_state, save_path)
+            else:
+                # non-FSDP: directly save state dict
+                cpu_state = self.trainer.external_trainer.model.state_dict()
+                self._save_fake_ckpt(cpu_state, save_path)
 
         elif self.save_fmt == "real":
             save_func = self.quant_model.get_save_func()(self.quant_model)

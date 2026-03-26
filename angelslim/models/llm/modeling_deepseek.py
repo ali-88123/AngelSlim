@@ -921,7 +921,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-    using_multi_nodes = False
+    using_dist_run = False
 
     def __init__(self, config):
         super().__init__(config)
@@ -963,12 +963,12 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
         device_map="auto",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
-        using_multi_nodes=False,
+        using_dist_run=False,
     ):
         cls.ori_model_path = model_path
         cls.world_size = int(os.getenv("WORLD_SIZE", "1"))
-        if using_multi_nodes:
-            cls.using_multi_nodes = True
+        if using_dist_run:
+            cls.using_dist_run = True
             rank = int(os.getenv("RANK", "0"))
             parent_dir = os.path.dirname(model_path.rstrip("/"))
             tp_model_path = os.path.join(parent_dir, f"ds_ckpt_tp{cls.world_size}")

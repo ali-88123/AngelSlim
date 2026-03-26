@@ -43,7 +43,7 @@ class KimiK2(DeepSeek):
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         use_cache=False,
-        using_multi_nodes=False,
+        using_dist_run=False,
     ):
         if torch_dtype == "fp8":
             print_info("[Slim] Loading KimiK2 with fp8")
@@ -59,7 +59,7 @@ class KimiK2(DeepSeek):
                 device_map=device_map,
                 trust_remote_code=trust_remote_code,
                 low_cpu_mem_usage=low_cpu_mem_usage,
-                using_multi_nodes=using_multi_nodes,
+                using_dist_run=using_dist_run,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(

@@ -67,7 +67,7 @@ class DeepSeek(BaseLLMModel):
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         use_cache=False,
-        using_multi_nodes=False,
+        using_dist_run=False,
     ):
         if torch_dtype == "fp8":
             print_info("[Slim] Loading DeepSeek with fp8")
@@ -83,7 +83,7 @@ class DeepSeek(BaseLLMModel):
                 device_map=device_map,
                 trust_remote_code=trust_remote_code,
                 low_cpu_mem_usage=low_cpu_mem_usage,
-                using_multi_nodes=using_multi_nodes,
+                using_dist_run=using_dist_run,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -122,7 +122,7 @@ class DeepSeek(BaseLLMModel):
             weight_observer(weight)
             return weight_observer.scales()
         else:
-            if not self.model.using_multi_nodes:
+            if not self.model.using_dist_run:
                 layer = layer.to("cuda")
                 weight = weight_dequant(layer.weight, layer.weight_scale_inv)
                 weight = weight.to("cpu")
@@ -149,7 +149,7 @@ class DeepSeek(BaseLLMModel):
                     return scales
 
     def get_qdq_module(self, layer, name):
-        if self.model.using_multi_nodes:
+        if self.model.using_dist_run:
             return layer
         act_scale, weight_scale = None, None
         if name in self.act_scales_dict:
@@ -208,7 +208,7 @@ class DeepSeek(BaseLLMModel):
 
     def get_save_func(self):
         if self.deploy_backend in ["vllm", "trtllm"]:
-            if self.model.using_multi_nodes:
+            if self.model.using_dist_run:
                 return DeepSeekV3PTQSaveMulti
             return DeepSeekV3PTQSaveSingle
         else:

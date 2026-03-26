@@ -58,12 +58,16 @@ class LearnableScalePlugin(BasePlugin):
         set_quant_parameters(self.quant_model.model, requires_grad=True)
         set_weight_parameters(self.quant_model.model, requires_grad=False)
 
-    def after_train(self):
+    def after_train(self, **kwargs):
         if self.use_weight_quant:
-            quant_inplace(self.quant_model.model)
-            set_quant_state(
-                self.quant_model.model, weight_quant=False, act_quant=self.use_activation_quant
-            )
+            if torch.distributed.is_initialized():
+                # FSDP: skip quant_inplace since parameters are sharded
+                pass
+            else:
+                quant_inplace(self.quant_model.model)
+                set_quant_state(
+                    self.quant_model.model, weight_quant=False, act_quant=self.use_activation_quant
+                )
 
     def _lazy_init(self, **kwargs):
         set_quant_state(self.quant_model.model, weight_quant=False, act_quant=True)
@@ -88,9 +92,13 @@ class LearnableScalePlugin(BasePlugin):
                     if not hasattr(module.act_quantizer, "overall_scale"):
                         scale = torch.tensor(
                             1.0, dtype=module.weight.dtype, device=module.weight.device
-                        )
+                        ).unsqueeze(
+                            0
+                        )  # for fsdp
                         zp = (
-                            torch.tensor(0.0, dtype=scale.dtype, device=scale.device)
+                            torch.tensor(0.0, dtype=scale.dtype, device=scale.device).unsqueeze(
+                                0
+                            )  # for fsdp
                             if not module.act_quantizer.is_sym
                             else None
                         )

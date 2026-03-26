@@ -30,7 +30,7 @@ FP8 `confg.yaml`文件参数配置，您可以参考`config/deepseek_r1/fp8_stat
 您可以通过下面代码启动FP8量化流程。支持多机多卡以及单卡校准。
 
 #### 多卡
-多卡模式需要--multi-nodes参数指定。单机8卡H20可实现DeepSeek权重以`fp8`类型加载的量化。
+多卡模式需要--dist-run参数指定。单机8卡H20可实现DeepSeek权重以`fp8`类型加载的量化。
 ```shell
 NNODES={运行的节点数}
 NPROC_PER_NODE={每个节点的卡数}
@@ -44,7 +44,7 @@ torchrun \
     --master-addr $MASTER_ADDR \
     tools/run.py \
     --config $CONFIG \
-    --multi-nodes
+    --dist-run
 ```
 
 双机16卡运行时，则每台机器上都执行以上脚本。
@@ -95,7 +95,7 @@ W4A8-FP8 `confg.yaml`文件参数配置，您可以参考`config/deepseek_r1/w4a
 您可以通过下面代码启动W4A8-FP8量化流程。支持多机多卡以及单卡校准。
 
 #### 多机多卡
-多机多卡模式需要--multi-nodes参数指定
+多机多卡模式需要--dist-run参数指定
 ```shell
 NNODES={运行的节点数}
 NPROC_PER_NODE={每个节点的卡数}
@@ -109,7 +109,7 @@ torchrun \
     --master-addr $MASTER_ADDR \
     tools/run.py \
     --config $CONFIG \
-    --multi-nodes
+    --dist-run
 ```
 
 #### 单卡

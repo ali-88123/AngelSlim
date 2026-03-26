@@ -75,7 +75,7 @@ class Engine:
         use_cache=False,
         cache_dir=None,
         deploy_backend="vllm",
-        using_multi_nodes=False,
+        using_dist_run=False,
         use_audio_in_video=False,
         attn_implementation="default",
         build_model=True,
@@ -95,7 +95,7 @@ class Engine:
             use_cache (bool): Whether to use cache during loading.
             cache_dir (str, optional): Directory to cache the model.
             deploy_backend (str): Backend for deployment, e.g., "torch", "vllm".
-            using_multi_nodes (bool): Whether to use multi-nodes for calibration.
+            using_dist_run (bool): Whether to use distributed mode for calibration.
             use_audio_in_video (bool): Whether to add audio track to a video file.
             attn_implementation (str): The attention implementation to use in the model.
         """
@@ -122,7 +122,7 @@ class Engine:
                         trust_remote_code=trust_remote_code,
                         low_cpu_mem_usage=low_cpu_mem_usage,
                         use_cache=use_cache,
-                        using_multi_nodes=using_multi_nodes,
+                        using_dist_run=using_dist_run,
                     )
                 self.model_path = model_path
         elif self.series in ["Omni"]:

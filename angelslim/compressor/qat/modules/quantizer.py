@@ -42,6 +42,87 @@ def _parse_bits_and_dtype(qtype_str):
     raise ValueError(f"Unsupported dtype in: {qtype_str}")
 
 
+def expand_scale_zp(scale, zero_point, x, granularity, group_size):
+    def _expand(t, target_shape):
+        if t is None:
+            return None
+        return t.expand(target_shape)
+
+    if granularity == "per-channel":
+        # scale: [out_channels, 1] -> [out_channels, in_features]
+        target = x.shape if len(x.shape) == 2 else (x.shape[0], x.flatten(1).shape[1])
+        scale = _expand(scale, target)
+        zero_point = _expand(zero_point, target)
+
+    elif granularity == "per-group":
+        # scale: [out_channels, n_groups] -> [out_channels, in_features]
+        group_size = group_size
+        scale = scale.unsqueeze(-1).expand(*scale.shape, group_size).reshape(scale.shape[0], -1)
+        if zero_point is not None:
+            zero_point = (
+                zero_point.unsqueeze(-1)
+                .expand(*zero_point.shape, group_size)
+                .reshape(zero_point.shape[0], -1)
+            )
+
+    elif granularity == "per-token":
+        # scale: [n_tokens, 1] -> [n_tokens, in_features] then reshape to x.shape
+        init_shape = x.shape
+        rx = x.reshape(-1, x.shape[-1])
+        scale = _expand(scale, rx.shape).reshape(init_shape)
+        zero_point = (
+            _expand(zero_point, rx.shape).reshape(init_shape) if zero_point is not None else None
+        )
+
+    return scale, zero_point
+
+
+class FP8PerTensorSTEQuantize(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, scale, float8_dtype: torch.dtype = torch.float8_e4m3fn):
+        max_value = torch.finfo(float8_dtype).max
+        if scale.device == torch.device("cpu"):
+            scale = scale.to(x.device).to(x.dtype)
+        x_div_s = x / scale
+        x_clamp = x_div_s.clamp(min=-max_value, max=max_value)
+        x_fp = x_clamp.to(float8_dtype).to(torch.bfloat16)
+        ctx.save_for_backward(x_fp)
+        return x_fp * scale
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x_fp = ctx.saved_tensors[0]
+        grad_x = grad_output
+        grad_scale = grad_output * x_fp
+        return grad_x, grad_scale, None
+
+
+class INTSTEQuantize(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, scale, minq, maxq, granularity, group_size):
+        scale_exp, round_zero_point = expand_scale_zp(scale, None, x, granularity, group_size)
+        u = x / scale_exp
+        x_int = torch.clamp(torch.round(u), minq, maxq)
+        ctx.save_for_backward(x_int, scale)
+        ctx.granularity = granularity
+        return x_int * scale_exp
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x_int, scale = ctx.saved_tensors
+        granularity = ctx.granularity
+        grad_x = grad_output
+        if granularity == "per-group":
+            grad_scale = (
+                (grad_output * x_int)
+                .reshape(-1, scale.shape[-1], x_int.shape[-1] // scale.shape[-1])
+                .sum(-1)
+            )
+        return grad_x, grad_scale, None, None, None, None
+
+
 class Quantizer(nn.Module):
     def __init__(self, config, quant_info, x=None, is_act=False, resume=False):
         super().__init__()
@@ -125,7 +206,7 @@ class Quantizer(nn.Module):
 
     def _compute_scales(self, x, granularity="per-tensor", group_size=-1):
         if granularity == "per-tensor":
-            s = torch.clamp(torch.max(torch.abs(x.flatten())), min=1e-8)
+            s = torch.clamp(torch.max(torch.abs(x.flatten())), min=1e-8).unsqueeze(0)  # for fsdp
 
         elif granularity == "per-channel":
             if len(x.shape) > 2:
@@ -161,7 +242,7 @@ class Quantizer(nn.Module):
             xmax = max(torch.max(x.flatten()), 0.0)
             if xmin == xmax:
                 xmin, xmax = -1.0, 1.0
-            s = max((xmax - xmin) / (self.qmax - self.qmin), 1e-8)
+            s = max((xmax - xmin) / (self.qmax - self.qmin), 1e-8).unsqueeze(0)  # for fsdp
             zp = torch.round(-xmin / s) + self.qmin
 
         elif granularity == "per-channel":
@@ -227,62 +308,25 @@ class Quantizer(nn.Module):
             self.overall_zero_point.append(zp)
         self.calib_count += x.shape[0]
 
-    def _expand_scale_zp(self, scale, zero_point, x):
-        def _expand(t, target_shape):
-            if t is None:
-                return None
-            return t.expand(target_shape)
-
-        if self.granularity == "per-channel":
-            # scale: [out_channels, 1] -> [out_channels, in_features]
-            target = x.shape if len(x.shape) == 2 else (x.shape[0], x.flatten(1).shape[1])
-            scale = _expand(scale, target)
-            zero_point = _expand(zero_point, target)
-
-        elif self.granularity == "per-group":
-            # scale: [out_channels, n_groups] -> [out_channels, in_features]
-            group_size = self.group_size
-            scale = (
-                scale.unsqueeze(-1).expand(*scale.shape, group_size).reshape(scale.shape[0], -1)
-            )
-            if zero_point is not None:
-                zero_point = (
-                    zero_point.unsqueeze(-1)
-                    .expand(*zero_point.shape, group_size)
-                    .reshape(zero_point.shape[0], -1)
-                )
-
-        elif self.granularity == "per-token":
-            # scale: [n_tokens, 1] -> [n_tokens, in_features] then reshape to x.shape
-            init_shape = x.shape
-            rx = x.reshape(-1, x.shape[-1])
-            scale = _expand(scale, rx.shape).reshape(init_shape)
-            zero_point = (
-                _expand(zero_point, rx.shape).reshape(init_shape)
-                if zero_point is not None
-                else None
-            )
-
-        return scale, zero_point
-
     def fake_quant(self, x):
         scale = clamp_ste(self.scale, 1e-4, 1e4)
         round_zero_point = (
             None if self.is_sym else clamp_ste(round_ste(self.zero_point), self.qmin, self.qmax)
         )
-        scale, round_zero_point = self._expand_scale_zp(scale, round_zero_point, x)
 
         if self.is_w4a8_fp8:
-            x_int4 = round_ste(x / scale)
-            x_int4 = clamp_ste(x_int4, self.qmin, self.qmax).mul(scale)
+            x_deq4 = INTSTEQuantize.apply(
+                x, scale, self.qmin, self.qmax, self.granularity, self.group_size
+            )
             fp8_scale = scale.max() * self.qmax / FP8_E4M3_QMAX
-            weight_fp8 = (x_int4 / fp8_scale).clamp(-448, 448).to(torch.float8_e4m3fn)
-            return weight_fp8.to(torch.bfloat16) * fp8_scale
+            return FP8PerTensorSTEQuantize.apply(x_deq4, fp8_scale)
 
         if self.dtype == "fp8":
-            weight_fp8 = (x / scale).clamp(-448, 448).to(torch.float8_e4m3fn)
-            return weight_fp8.to(torch.bfloat16) * scale
+            return FP8PerTensorSTEQuantize.apply(x, scale)
 
+        scale, round_zero_point = expand_scale_zp(
+            scale, round_zero_point, x, self.granularity, self.group_size
+        )
         x_int = round_ste(x / scale)
         if round_zero_point is not None:
             x_int = x_int.add(round_zero_point)

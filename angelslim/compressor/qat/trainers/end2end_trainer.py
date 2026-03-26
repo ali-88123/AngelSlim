@@ -68,13 +68,20 @@ class End2EndTrainer:
 
     def run(self, dataloader):
         self.prepare_dataset(dataloader)
-        self.prepare_trainer()
         self.plugin_manager.call_before_train(train_dataset=self.train_dataset)
+        self.prepare_trainer()
 
         if self.resume_ckpt_dir is not None:
             print_info(f"Loading from resume {self.resume_ckpt_dir}")
-            save_dict = torch.load(self.resume_ckpt_dir, map_location="cpu")
-            self.quant_model.model.load_state_dict(save_dict)
+            save_dict = torch.load(self.resume_ckpt_dir, map_location="cuda")
+            # Strip "_orig_mod." prefix from keys (added by fsdp)
+            cleaned = {}
+            for k, v in save_dict.items():
+                new_key = k.replace("_orig_mod.", "")
+                cleaned[new_key] = v
+                if new_key != k:
+                    print_info(f"Renamed key: {k} -> {new_key}")
+            self.quant_model.model.load_state_dict(cleaned)
 
         if self.do_train:
             if self.external_trainer is not None:

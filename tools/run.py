@@ -29,7 +29,7 @@ def get_args():
     parser.add_argument("-c", "--config", type=str, required=True)
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--save-path", type=str, default=None)
-    parser.add_argument("--multi-nodes", action="store_true")
+    parser.add_argument("--dist-run", action="store_true")
     parser.add_argument("--lm-eval", action="store_true")
     parser.add_argument("--ppl-eval", action="store_true")
     args = parser.parse_args()
@@ -54,10 +54,10 @@ def merge_config(config, args):
     )
 
 
-def multi_nodes_run(config):
+def dist_run(config):
     """
     Run the LLM compression process based on the provided configuration
-    using multiple nodes.
+    using distributed mode.
 
     Args:
         config (dict): Configuration dictionary containing
@@ -96,7 +96,7 @@ def multi_nodes_run(config):
         use_audio_in_video=model_config.use_audio_in_video,
         attn_implementation=model_config.attn_implementation,
         deploy_backend=global_config.deploy_backend,
-        using_multi_nodes=True,
+        using_dist_run=True,
     )
 
     # Step 5: Prepare data (optional custom dataloader)
@@ -286,7 +286,7 @@ def run(config):
 
     if args.lm_eval:
         slim_engine.lm_eval(
-            tasks="piqa,arc_easy,arc_challenge,hellaswag,winogrande",
+            tasks="piqa,arc_easy,arc_challenge,hellaswag,winogrande,boolq",
             batch_size=32,
             num_fewshot=0,
         )
@@ -301,7 +301,7 @@ if __name__ == "__main__":
     config = parser.parse(args.config)
     merge_config(config, args)
     print_config(config)
-    if args.multi_nodes:
-        multi_nodes_run(config)
+    if args.dist_run:
+        dist_run(config)
     else:
         run(config)
