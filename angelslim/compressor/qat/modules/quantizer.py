@@ -180,6 +180,20 @@ class Quantizer(nn.Module):
         self.scale = nn.Parameter(scale)
         self.zero_point = nn.Parameter(zero_point) if zero_point is not None else None
 
+    def freeze_scale(self):
+        """Freeze scale (and zero_point) so they are not updated during training."""
+        if self.scale is not None and isinstance(self.scale, nn.Parameter):
+            self.scale.requires_grad = False
+        if self.zero_point is not None and isinstance(self.zero_point, nn.Parameter):
+            self.zero_point.requires_grad = False
+
+    def unfreeze_scale(self):
+        """Unfreeze scale (and zero_point) so they can be updated during training."""
+        if self.scale is not None and isinstance(self.scale, nn.Parameter):
+            self.scale.requires_grad = True
+        if self.zero_point is not None and isinstance(self.zero_point, nn.Parameter):
+            self.zero_point.requires_grad = True
+
     def _init_quant_params(self, x):
         with torch.no_grad():
             if self.is_act:
@@ -361,9 +375,10 @@ class QuantLinear(nn.Module):
         super().__init__()
         self.fwd_func = F.linear
         self.register_parameter("weight", org_module.weight)
-        self.bias = None
         if org_module.bias is not None:
             self.register_parameter("bias", org_module.bias)
+        else:
+            self.register_parameter("bias", None)
         self.use_weight_quant = use_weight_quant
         self.use_act_quant = use_act_quant
         if self.use_weight_quant:

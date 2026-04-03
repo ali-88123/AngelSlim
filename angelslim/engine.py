@@ -34,6 +34,13 @@ from .utils import (
     print_info,
 )
 
+try:
+    from lmms_eval import evaluator
+
+    from angelslim.utils import AngelslimModel
+except ImportError:
+    pass
+
 DEFAULT_COMPRESSION_CONFIG = {
     "fp8_static": default_compress_config.default_fp8_static_config(),
     "fp8_dynamic": default_compress_config.default_fp8_dynamic_config(),
@@ -404,6 +411,32 @@ class Engine:
             print_info(f"lm_eval results saved to {output_path}")
 
         return results
+
+    def lmms_eval(
+        self,
+        tasks,
+        num_fewshot=0,
+        batch_size=1,
+        log_samples=True,
+        output_path: Optional[str] = None,
+    ):
+        wraped_model = AngelslimModel(
+            self.slim_model.model, self.slim_model.processor, self.slim_model.tokenizer
+        )
+        task_names = tasks.split(",")
+        results = evaluator.simple_evaluate(
+            model=wraped_model,
+            tasks=task_names,
+            num_fewshot=num_fewshot,
+            batch_size=batch_size,
+            log_samples=log_samples,
+            device="cuda",
+        )
+        if output_path is not None:
+            RESULT_FILE_NAME = os.environ.get("RESULT_FILE_NAME", "default")
+            live_path = os.path.join(output_path, f"results_{RESULT_FILE_NAME}.json")
+            with open(live_path, "w", encoding="utf-8") as f:
+                json.dump(results["results"], f, indent=4, ensure_ascii=False)
 
 
 class InferEngine(Engine):

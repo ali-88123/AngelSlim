@@ -16,7 +16,8 @@ import torch
 from datasets import load_dataset
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
 
-from ....data.qat_dataset import QATDataset
+from ....data.multimodal_dataset import MultiModalDataset
+from ....data.qat_dataset import QATDataset, VLQATDataCollator
 from ....utils import print_info
 from .trainer_factory import TrainerFactory
 
@@ -35,14 +36,16 @@ class End2EndTrainer:
         self.resume_ckpt_dir = config["compress_config"].QAT.resume_ckpt_dir
         self.do_train = config["compress_config"].QAT.do_train
         self.external_trainer = None
+        self._is_vl = False
+        self._data_collator = None
 
     def prepare_trainer(self):
         if self.training_mode == "blockwise":
             return
         if self.training_mode == "end2end" and self.dist_mode == "hf":
-            self.external_trainer = Seq2SeqTrainer(
+            trainer_kwargs = dict(
                 model=self.quant_model.model,
-                tokenizer=self.quant_model.tokenizer,
+                processing_class=self.quant_model.tokenizer,
                 args=Seq2SeqTrainingArguments(
                     output_dir=self.config["global_config"].save_path,
                     **self.config["compress_config"].QAT.hf_args,
@@ -50,10 +53,15 @@ class End2EndTrainer:
                 train_dataset=self.train_dataset,
                 eval_dataset=None,
             )
+            if self._data_collator is not None:
+                trainer_kwargs["data_collator"] = self._data_collator
+            self.external_trainer = Seq2SeqTrainer(**trainer_kwargs)
         else:
             raise NotImplementedError(f"Unsupported distribution mode: {self.dist_mode}")
 
     def prepare_dataset(self, dataloader):
+        self._is_vl = isinstance(dataloader.dataset, MultiModalDataset)
+
         if self.hf_dataset is not None:
             parts = self.hf_dataset.split(",")
             dataset = load_dataset(*parts, cache_dir=self.hf_cache_dir)
@@ -63,12 +71,17 @@ class End2EndTrainer:
                 block_size=dataloader.dataset.max_length,
                 is_opensource=True,
             )
+        elif self._is_vl:
+            self._data_collator = VLQATDataCollator(tokenizer=self.quant_model.tokenizer)
+            self.train_dataset = dataloader.dataset
         else:
             self.train_dataset = QATDataset(dataloader.dataset, self.quant_model.tokenizer)
 
     def run(self, dataloader):
         self.prepare_dataset(dataloader)
-        self.plugin_manager.call_before_train(train_dataset=self.train_dataset)
+        self.plugin_manager.call_before_train(
+            train_dataset=self.train_dataset, train_dataloader=dataloader
+        )
         self.prepare_trainer()
 
         if self.resume_ckpt_dir is not None:

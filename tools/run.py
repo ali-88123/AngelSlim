@@ -32,6 +32,7 @@ def get_args():
     parser.add_argument("--dist-run", action="store_true")
     parser.add_argument("--lm-eval", action="store_true")
     parser.add_argument("--ppl-eval", action="store_true")
+    parser.add_argument("--lmms-eval", action="store_true")
     args = parser.parse_args()
     return args
 
@@ -352,6 +353,15 @@ def run(config):
             tasks="piqa,arc_easy,arc_challenge,hellaswag,winogrande,boolq",
             batch_size=32,
             num_fewshot=0,
+        )
+
+    if args.lmms_eval:
+        slim_engine.lmms_eval(
+            tasks="chartqa,mme,mmstar,ocrbench,ai2d",
+            num_fewshot=0,
+            batch_size=32,
+            log_samples=True,
+            output_path="./results",
         )
 
     # Step 8: Save compressed model

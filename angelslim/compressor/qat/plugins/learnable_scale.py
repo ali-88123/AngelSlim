@@ -15,6 +15,7 @@
 import torch
 from tqdm import tqdm
 
+from ....data.multimodal_dataset import MultiModalDataset
 from ....utils import print_info, set_op_by_name
 from ..modules.quantizer import QuantLinear
 from .base_plugin import BasePlugin
@@ -30,6 +31,8 @@ class LearnableScalePlugin(BasePlugin):
         self.resume_ckpt_dir = resume_ckpt_dir
         self.use_weight_quant = self.config.get("use_weight_quant", False)
         self.use_activation_quant = self.config.get("use_activation_quant", False)
+        self.learn_weight_scale_only = self.config.get("learn_weight_scale_only", False)
+        self.freeze_norm_weights = self.config.get("freeze_norm_weights", False)
 
     def before_train(self, **kwargs):
         for name, module in self.quant_model.model.named_modules():
@@ -55,8 +58,20 @@ class LearnableScalePlugin(BasePlugin):
         ):
             self._lazy_init(**kwargs)
 
-        set_quant_parameters(self.quant_model.model, requires_grad=True)
-        set_weight_parameters(self.quant_model.model, requires_grad=False)
+        if self.learn_weight_scale_only:
+            # Only learn weight scale; freeze activation scale after initialization
+            set_quant_parameters(self.quant_model.model, requires_grad=True)
+            set_weight_parameters(self.quant_model.model, requires_grad=False)
+            freeze_act_scale(self.quant_model.model)
+            print_info("activation scales are frozen, only weight scales are learnable.")
+        else:
+            set_quant_parameters(self.quant_model.model, requires_grad=True)
+            set_weight_parameters(self.quant_model.model, requires_grad=False)
+
+        # Control norm layer weights gradient
+        set_norm_parameters(self.quant_model.model, requires_grad=not self.freeze_norm_weights)
+        if self.freeze_norm_weights:
+            print_info("freeze_norm_weights=True: norm layer weights are frozen.")
 
     def after_train(self, **kwargs):
         if self.use_weight_quant:
@@ -71,17 +86,30 @@ class LearnableScalePlugin(BasePlugin):
 
     def _lazy_init(self, **kwargs):
         set_quant_state(self.quant_model.model, weight_quant=False, act_quant=True)
+        self._is_vl = isinstance(kwargs["train_dataloader"].dataset, MultiModalDataset)
 
         init_samples = self.config.get("lazy_init_samples", 10)
-        for i in tqdm(range(init_samples), desc="Lazy init"):
-            batch = kwargs["train_dataset"][i]
-            inputs = {
-                k: torch.tensor(v).unsqueeze(0).to(self.quant_model.model.device)
-                for k, v in batch.items()
-                if k != "labels"
-            }
+        if self._is_vl:
             with torch.no_grad():
-                self.quant_model.model(**inputs)
+                calibrated_cnt = 0
+                dataloader = kwargs["train_dataloader"]
+                for batch in tqdm(dataloader, desc="calibrating...", total=init_samples):
+                    inputs = {k: v.to(self.quant_model.model.device) for k, v in batch.items()}
+                    inputs["use_cache"] = False
+                    _ = self.quant_model.model(**inputs)
+                    calibrated_cnt += 1
+                    if calibrated_cnt >= init_samples:
+                        break
+        else:
+            for i in tqdm(range(init_samples), desc="Lazy init"):
+                batch = kwargs["train_dataset"][i]
+                inputs = {
+                    k: torch.tensor(v).unsqueeze(0).to(self.quant_model.model.device)
+                    for k, v in batch.items()
+                    if k != "labels"
+                }
+                with torch.no_grad():
+                    self.quant_model.model(**inputs)
 
         for _, module in self.quant_model.model.named_modules():
             if isinstance(module, QuantLinear):
@@ -133,6 +161,13 @@ def set_quant_state(model, weight_quant=False, act_quant=False):
             module.set_quant_state(weight_quant=weight_quant, act_quant=act_quant)
 
 
+def freeze_act_scale(model):
+    """Freeze activation quantizer scales so they are not updated during training."""
+    for module in model.modules():
+        if isinstance(module, QuantLinear) and hasattr(module, "act_quantizer"):
+            module.act_quantizer.freeze_scale()
+
+
 def set_quant_parameters(model, requires_grad):
     params = []
     for n, m in model.named_parameters():
@@ -161,6 +196,17 @@ def weight_parameters(model):
     params = []
     for n, m in model.named_parameters():
         if n.find("weight") > -1 and not (n.find("scale") > -1 or n.find("zero_point") > -1):
+            params.append(m)
+    return iter(params)
+
+
+def set_norm_parameters(model, requires_grad):
+    """Set gradient requirement for norm layer weights."""
+    params = []
+    for n, m in model.named_parameters():
+        # Match common norm layer weight parameters
+        if n.find("norm") > -1 and n.find("weight") > -1:
+            m.requires_grad = requires_grad
             params.append(m)
     return iter(params)
 
